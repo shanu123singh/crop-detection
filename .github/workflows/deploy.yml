@@ -1,0 +1,106 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Required permissions for Workload Identity Federation (OIDC)
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || 'logicboots-490514' }}
+  REGION: asia-south1
+  GAR_LOCATION: asia-south1
+  REPOSITORY: crop-detection-repo
+  SERVICE: crop-detection-api
+
+jobs:
+  deploy:
+    name: Build & Deploy to Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout Code (with Git LFS enabled for PyTorch model weights)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # Step 2: Ensure LFS files are pulled properly
+      - name: Fetch Git LFS artifacts
+        run: |
+          git lfs pull
+
+      # Step 3: Authenticate to GCP using Workload Identity Federation via GitHub Secrets
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+          token_format: access_token
+
+      # Step 4: Set up Google Cloud SDK
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Step 5: Configure Docker for Artifact Registry
+      - name: Configure Docker Authentication
+        run: |
+          gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
+
+      # Step 6: Ensure Artifact Registry repository exists
+      - name: Ensure Artifact Registry Repository Exists
+        run: |
+          if ! gcloud artifacts repositories describe ${{ env.REPOSITORY }} --location=${{ env.GAR_LOCATION }} &>/dev/null; then
+            echo "Creating Artifact Registry repository '${{ env.REPOSITORY }}' in ${{ env.GAR_LOCATION }}..."
+            gcloud artifacts repositories create ${{ env.REPOSITORY }} \
+              --repository-format=docker \
+              --location=${{ env.GAR_LOCATION }} \
+              --description="Docker repository for Crop Detection API"
+          else
+            echo "Artifact Registry repository '${{ env.REPOSITORY }}' already exists."
+          fi
+
+      # Step 7: Build and Push Docker Image
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }}:${{ github.sha }}"
+          LATEST_TAG="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }}:latest"
+          
+          echo "Building image: $IMAGE_TAG"
+          docker build -t "$IMAGE_TAG" -t "$LATEST_TAG" .
+          
+          echo "Pushing image to Artifact Registry..."
+          docker push "$IMAGE_TAG"
+          docker push "$LATEST_TAG"
+
+      # Step 8: Deploy Container to Cloud Run
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.SERVICE }}:${{ github.sha }}
+          flags: |
+            --port=8080
+            --memory=2Gi
+            --cpu=1
+            --min-instances=0
+            --max-instances=5
+            --timeout=300
+            --allow-unauthenticated
+
+      # Step 9: Output the Service URL
+      - name: Show Service URL
+        run: |
+          echo "===================================================="
+          echo "Deployment Successful!"
+          echo "Cloud Run URL: ${{ steps.deploy.outputs.url }}"
+          echo "Swagger Docs: ${{ steps.deploy.outputs.url }}/docs"
+          echo "===================================================="

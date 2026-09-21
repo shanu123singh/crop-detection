@@ -36,11 +36,16 @@ BASE_DIR = os.path.dirname(
 # CNN MODEL PATH
 # ============================================================
 
-MODEL_PATH = os.path.join(
-    BASE_DIR,
-    "models",
-    "condition_resnet50.pth"
-)
+MODEL_PATH = os.environ.get("MODEL_PATH", "")
+if not MODEL_PATH or not os.path.exists(MODEL_PATH):
+    default_path = os.path.join(BASE_DIR, "models", "condition_resnet50.pth")
+    best_path = os.path.join(BASE_DIR, "models", "condition_resnet50_best.pth")
+    if os.path.exists(default_path):
+        MODEL_PATH = default_path
+    elif os.path.exists(best_path):
+        MODEL_PATH = best_path
+    else:
+        MODEL_PATH = default_path
 
 
 # ============================================================
@@ -2323,7 +2328,7 @@ if __name__ == "__main__":
 
         host="0.0.0.0",
 
-        port=5000,
+        port=int(os.environ.get("PORT", 8080)),
 
         reload=False
 
