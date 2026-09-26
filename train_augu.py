@@ -1,36 +1,9 @@
-# ============================================================
-# train.py
-# CAPSICUM CONDITION CLASSIFICATION - RESNET50
-#
-# DATA FLOW:
-#
-# data new
-#     ↓
-# exact duplicate removal
-#     ↓
-# near duplicate / grouping
-#     ↓
-# clean 80/10/10 split
-#     ↓
-# train-only augmentation
-#     ↓
-# augmented_dataset/train
-#     ↓
-# ResNet50 training
-#     ↓
-# Early Stopping
-#     ↓
-# Best Model
-#     ↓
-# Internal Test
-#
-# VALIDATION AND TEST ARE NEVER AUGMENTED
-# ============================================================
-
-
 import os
 import copy
 import random
+import json
+import time
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -38,31 +11,25 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader
 
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
     recall_score,
     f1_score,
-    confusion_matrix,
-    classification_report
+    classification_report,
+    confusion_matrix
 )
 
-
 # ============================================================
-# CONFIGURATION
+# 1. PATH CONFIGURATION
 # ============================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
-
-
-# ------------------------------------------------------------
-# DATASET DIRECTORIES
-# ------------------------------------------------------------
 
 TRAIN_DIR = os.path.join(
     BASE_DIR,
@@ -82,39 +49,22 @@ TEST_DIR = os.path.join(
     "test"
 )
 
-
-# ------------------------------------------------------------
-# MODEL DIRECTORY
-# ------------------------------------------------------------
-
 MODEL_DIR = os.path.join(
     BASE_DIR,
     "models"
 )
-
-os.makedirs(
-    MODEL_DIR,
-    exist_ok=True
-)
-
-
-# ------------------------------------------------------------
-# RESULT DIRECTORY
-# ------------------------------------------------------------
 
 RESULT_DIR = os.path.join(
     BASE_DIR,
     "training_results"
 )
 
-os.makedirs(
-    RESULT_DIR,
-    exist_ok=True
-)
+os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 
 # ============================================================
-# CLASSES
+# 2. CLASS CONFIGURATION
 # ============================================================
 
 CLASSES = [
@@ -132,12 +82,13 @@ CLASSES = [
     "virus"
 ]
 
-
 NUM_CLASSES = len(CLASSES)
+
+TRAIN_TARGET = 1100
 
 
 # ============================================================
-# TRAINING PARAMETERS
+# 3. TRAINING CONFIGURATION
 # ============================================================
 
 IMAGE_SIZE = 224
@@ -154,22 +105,16 @@ WEIGHT_DECAY = 1e-4
 
 DROPOUT = 0.30
 
-
-# ============================================================
-# EARLY STOPPING
-# ============================================================
-
 PATIENCE = 3
 
 MIN_DELTA = 0.001
 
-
-# ============================================================
-# RANDOM SEED
-# ============================================================
-
 SEED = 42
 
+
+# ============================================================
+# 4. REPRODUCIBILITY
+# ============================================================
 
 def set_seed(seed=42):
 
@@ -180,92 +125,88 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
 
     if torch.cuda.is_available():
-
         torch.cuda.manual_seed(seed)
-
         torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+
+    torch.backends.cudnn.benchmark = False
 
 
 set_seed(SEED)
 
 
 # ============================================================
-# DEVICE
+# 5. DEVICE
 # ============================================================
 
-device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
 )
 
 
-print("\n")
-print("=" * 70)
-
-print("CAPSICUM RESNET50 TRAINING")
-
-print("=" * 70)
-
-print(
-    f"\nDevice: {device}"
-)
-
-if torch.cuda.is_available():
-
-    print(
-        f"GPU: "
-        f"{torch.cuda.get_device_name(0)}"
-    )
-
-else:
-
-    print(
-        "GPU not available - using CPU"
-    )
-
-
 # ============================================================
-# CHECK DATASET DIRECTORIES
+# 6. PRINT CONFIGURATION
 # ============================================================
 
 print("\n")
-print("=" * 70)
-print("CHECKING DATASET DIRECTORIES")
-print("=" * 70)
+print("=" * 80)
+print("CAPSICUM RESNET50 - FINAL TRAINING")
+print("=" * 80)
+
+print(f"Device       : {DEVICE}")
+print(f"Image size   : {IMAGE_SIZE}")
+print(f"Batch size   : {BATCH_SIZE}")
+print(f"Epochs       : {EPOCHS}")
+print(f"Learning rate: {LEARNING_RATE}")
+print(f"Weight decay : {WEIGHT_DECAY}")
+print(f"Train target : {TRAIN_TARGET}")
+print(f"Num classes  : {NUM_CLASSES}")
+
+print("\nPaths:")
+print(f"Train        : {TRAIN_DIR}")
+print(f"Validation   : {VALID_DIR}")
+print(f"Test         : {TEST_DIR}")
+print(f"Models       : {MODEL_DIR}")
+print(f"Results      : {RESULT_DIR}")
+
+print("=" * 80)
 
 
-required_dirs = [
+# ============================================================
+# 7. CHECK DIRECTORIES
+# ============================================================
+
+for directory in [
     TRAIN_DIR,
     VALID_DIR,
     TEST_DIR
-]
+]:
 
-
-for directory in required_dirs:
-
-    if not os.path.exists(directory):
+    if not os.path.isdir(directory):
 
         raise FileNotFoundError(
-            f"\nDataset directory not found:\n"
-            f"{directory}"
+            f"\nRequired directory not found:\n{directory}"
         )
 
-    print(
-        f"OK: {directory}"
-    )
-
 
 # ============================================================
-# TRANSFORMS
+# 8. TRANSFORMS
 # ============================================================
-
-# ------------------------------------------------------------
-# TRAIN TRANSFORM
 #
-# Offline augmentation already created 1100/class.
-# Here we use only MILD runtime augmentation.
-# ------------------------------------------------------------
+# IMPORTANT:
+# augmentation2.py already performs OFFLINE augmentation.
+#
+# Therefore we DO NOT perform random augmentation again here.
+#
+# This avoids:
+#     augmented image
+#          +
+#     random augmentation
+#          =
+#     unnecessary double augmentation
+#
+# ============================================================
 
 train_transform = transforms.Compose([
 
@@ -273,36 +214,14 @@ train_transform = transforms.Compose([
         (IMAGE_SIZE, IMAGE_SIZE)
     ),
 
-    transforms.RandomHorizontalFlip(
-        p=0.5
-    ),
-
-    transforms.RandomRotation(
-        degrees=10
-    ),
-
     transforms.ToTensor(),
 
     transforms.Normalize(
-        mean=[
-            0.485,
-            0.456,
-            0.406
-        ],
-        std=[
-            0.229,
-            0.224,
-            0.225
-        ]
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
     )
 ])
 
-
-# ------------------------------------------------------------
-# VALIDATION TRANSFORM
-#
-# NO RANDOM AUGMENTATION
-# ------------------------------------------------------------
 
 valid_transform = transforms.Compose([
 
@@ -313,25 +232,11 @@ valid_transform = transforms.Compose([
     transforms.ToTensor(),
 
     transforms.Normalize(
-        mean=[
-            0.485,
-            0.456,
-            0.406
-        ],
-        std=[
-            0.229,
-            0.224,
-            0.225
-        ]
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
     )
 ])
 
-
-# ------------------------------------------------------------
-# TEST TRANSFORM
-#
-# NO RANDOM AUGMENTATION
-# ------------------------------------------------------------
 
 test_transform = transforms.Compose([
 
@@ -342,28 +247,17 @@ test_transform = transforms.Compose([
     transforms.ToTensor(),
 
     transforms.Normalize(
-        mean=[
-            0.485,
-            0.456,
-            0.406
-        ],
-        std=[
-            0.229,
-            0.224,
-            0.225
-        ]
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
     )
 ])
 
 
 # ============================================================
-# LOAD DATASETS
+# 9. LOAD DATASETS
 # ============================================================
 
-print("\n")
-print("=" * 70)
-print("LOADING DATASETS")
-print("=" * 70)
+print("\nLoading datasets...")
 
 
 train_dataset = datasets.ImageFolder(
@@ -385,139 +279,227 @@ test_dataset = datasets.ImageFolder(
 
 
 # ============================================================
-# VERIFY CLASS ORDER
+# 10. CLASS ORDER VALIDATION
 # ============================================================
+
+print("\nDetected class order:")
+
+print("Train:")
+print(train_dataset.classes)
+
+print("\nValidation:")
+print(valid_dataset.classes)
+
+print("\nTest:")
+print(test_dataset.classes)
+
+
+expected_classes = CLASSES
+
+
+if train_dataset.classes != expected_classes:
+
+    raise RuntimeError(
+        "\nTRAIN CLASS ORDER MISMATCH!\n"
+        f"Expected:\n{expected_classes}\n"
+        f"Found:\n{train_dataset.classes}"
+    )
+
+
+if valid_dataset.classes != expected_classes:
+
+    raise RuntimeError(
+        "\nVALIDATION CLASS ORDER MISMATCH!\n"
+        f"Expected:\n{expected_classes}\n"
+        f"Found:\n{valid_dataset.classes}"
+    )
+
+
+if test_dataset.classes != expected_classes:
+
+    raise RuntimeError(
+        "\nTEST CLASS ORDER MISMATCH!\n"
+        f"Expected:\n{expected_classes}\n"
+        f"Found:\n{test_dataset.classes}"
+    )
+
+
+print("\nClass order verified successfully.")
+
+
+# ============================================================
+# 11. DATASET COUNTS
+# ============================================================
+
+def get_class_counts(dataset):
+
+    counts = {
+        class_name: 0
+        for class_name in CLASSES
+    }
+
+    for _, label in dataset.samples:
+
+        class_name = dataset.classes[label]
+
+        counts[class_name] += 1
+
+    return counts
+
+
+train_counts = get_class_counts(train_dataset)
+
+valid_counts = get_class_counts(valid_dataset)
+
+test_counts = get_class_counts(test_dataset)
+
 
 print("\n")
-print("Classes detected by ImageFolder:")
-
-print(
-    train_dataset.classes
-)
-
-
-if train_dataset.classes != CLASSES:
-
-    print("\nWARNING:")
-    print(
-        "ImageFolder class order differs from "
-        "the expected class list."
-    )
-
-    print(
-        "\nExpected:"
-    )
-
-    print(CLASSES)
-
-    print(
-        "\nDetected:"
-    )
-
-    print(train_dataset.classes)
-
-
-# ============================================================
-# DATASET COUNTS
-# ============================================================
-
-print("\n")
-print("=" * 70)
+print("=" * 80)
 print("DATASET COUNTS")
-print("=" * 70)
+print("=" * 80)
 
+print("\nTRAIN:")
 
-print(
-    f"\nTrain images: "
-    f"{len(train_dataset)}"
-)
-
-print(
-    f"Validation images: "
-    f"{len(valid_dataset)}"
-)
-
-print(
-    f"Test images: "
-    f"{len(test_dataset)}"
-)
-
-
-# ============================================================
-# CLASS DISTRIBUTION
-# ============================================================
-
-print("\n")
-print("TRAIN CLASS DISTRIBUTION")
-
-train_counts = {}
-
-
-for class_name in train_dataset.classes:
-
-    class_index = train_dataset.class_to_idx[
-        class_name
-    ]
-
-    count = sum(
-        1
-        for _, label
-        in train_dataset.samples
-        if label == class_index
-    )
-
-    train_counts[class_name] = count
+for class_name in CLASSES:
 
     print(
-        f"{class_name:<25} "
-        f"{count}"
+        f"{class_name:<25} : "
+        f"{train_counts[class_name]}"
+    )
+
+
+print("\nVALIDATION:")
+
+for class_name in CLASSES:
+
+    print(
+        f"{class_name:<25} : "
+        f"{valid_counts[class_name]}"
+    )
+
+
+print("\nTEST:")
+
+for class_name in CLASSES:
+
+    print(
+        f"{class_name:<25} : "
+        f"{test_counts[class_name]}"
     )
 
 
 # ============================================================
-# DATALOADERS
+# 12. VERIFY TRAIN = 1100/CLASS
 # ============================================================
+
+print("\nChecking training balance...")
+
+for class_name in CLASSES:
+
+    count = train_counts[class_name]
+
+    if count != TRAIN_TARGET:
+
+        raise RuntimeError(
+            f"\nTRAIN DATA ERROR:\n"
+            f"Class '{class_name}' has {count} images.\n"
+            f"Expected exactly {TRAIN_TARGET}."
+        )
+
+
+print(
+    f"Training dataset verified: "
+    f"{TRAIN_TARGET} images/class."
+)
+
+
+# ============================================================
+# 13. DATASET TOTALS
+# ============================================================
+
+total_train = len(train_dataset)
+
+total_valid = len(valid_dataset)
+
+total_test = len(test_dataset)
+
+
+print("\nDataset totals:")
+
+print(f"Train      : {total_train}")
+
+print(f"Validation : {total_valid}")
+
+print(f"Test       : {total_test}")
+
+
+expected_train_total = TRAIN_TARGET * NUM_CLASSES
+
+
+if total_train != expected_train_total:
+
+    raise RuntimeError(
+        f"\nExpected {expected_train_total} training images "
+        f"but found {total_train}."
+    )
+
+
+# ============================================================
+# 14. DATA LOADERS
+# ============================================================
+
+print("\nCreating DataLoaders...")
+
 
 train_loader = DataLoader(
+
     train_dataset,
+
     batch_size=BATCH_SIZE,
+
     shuffle=True,
+
     num_workers=NUM_WORKERS,
+
     pin_memory=torch.cuda.is_available()
 )
 
 
 valid_loader = DataLoader(
+
     valid_dataset,
+
     batch_size=BATCH_SIZE,
+
     shuffle=False,
+
     num_workers=NUM_WORKERS,
+
     pin_memory=torch.cuda.is_available()
 )
 
 
 test_loader = DataLoader(
+
     test_dataset,
+
     batch_size=BATCH_SIZE,
+
     shuffle=False,
+
     num_workers=NUM_WORKERS,
+
     pin_memory=torch.cuda.is_available()
 )
 
 
 # ============================================================
-# BUILD RESNET50
+# 15. LOAD RESNET50
 # ============================================================
 
-print("\n")
-print("=" * 70)
-print("BUILDING RESNET50")
-print("=" * 70)
+print("\nLoading ResNet50...")
 
-
-# ------------------------------------------------------------
-# Load pretrained ResNet50
-# ------------------------------------------------------------
 
 try:
 
@@ -527,18 +509,19 @@ try:
         weights=weights
     )
 
+    print("Pretrained ImageNet weights loaded.")
+
+
+except Exception as e:
+
     print(
-        "Loaded ResNet50 with pretrained ImageNet weights."
+        "\nWARNING: Could not load pretrained weights."
     )
 
-except Exception:
+    print(f"Reason: {e}")
 
     print(
-        "WARNING: Could not load pretrained weights."
-    )
-
-    print(
-        "Using ResNet50 without pretrained weights."
+        "Continuing with weights=None."
     )
 
     model = models.resnet50(
@@ -547,19 +530,17 @@ except Exception:
 
 
 # ============================================================
-# FREEZE EARLY LAYERS
+# 16. FREEZE ALL LAYERS
 # ============================================================
-
-# Freeze everything first
 
 for parameter in model.parameters():
 
     parameter.requires_grad = False
 
 
-# ------------------------------------------------------------
-# Fine-tune Layer4
-# ------------------------------------------------------------
+# ============================================================
+# 17. UNFREEZE LAYER4
+# ============================================================
 
 for parameter in model.layer4.parameters():
 
@@ -567,7 +548,7 @@ for parameter in model.layer4.parameters():
 
 
 # ============================================================
-# REPLACE FINAL CLASSIFIER
+# 18. REPLACE FINAL CLASSIFIER
 # ============================================================
 
 in_features = model.fc.in_features
@@ -586,44 +567,72 @@ model.fc = nn.Sequential(
 )
 
 
-# ============================================================
-# MOVE MODEL TO DEVICE
-# ============================================================
+# Make sure FC is trainable.
 
-model = model.to(device)
+for parameter in model.fc.parameters():
 
-
-# ============================================================
-# PRINT TRAINABLE PARAMETERS
-# ============================================================
-
-print("\n")
-print("Trainable layers:")
-
-for name, parameter in model.named_parameters():
-
-    if parameter.requires_grad:
-
-        print(
-            f"  {name}"
-        )
+    parameter.requires_grad = True
 
 
 # ============================================================
-# LOSS FUNCTION
+# 19. MOVE MODEL TO DEVICE
+# ============================================================
+
+model = model.to(DEVICE)
+
+
+# ============================================================
+# 20. TRAINABLE PARAMETERS
+# ============================================================
+
+trainable_parameters = sum(
+
+    parameter.numel()
+
+    for parameter in model.parameters()
+
+    if parameter.requires_grad
+)
+
+
+total_parameters = sum(
+
+    parameter.numel()
+
+    for parameter in model.parameters()
+)
+
+
+print("\nModel information:")
+
+print(
+    f"Total parameters     : "
+    f"{total_parameters:,}"
+)
+
+print(
+    f"Trainable parameters : "
+    f"{trainable_parameters:,}"
+)
+
+
+# ============================================================
+# 21. LOSS FUNCTION
 # ============================================================
 
 criterion = nn.CrossEntropyLoss()
 
 
 # ============================================================
-# OPTIMIZER
+# 22. OPTIMIZER
 # ============================================================
 
 optimizer = optim.AdamW(
 
     filter(
-        lambda p: p.requires_grad,
+        lambda parameter:
+        parameter.requires_grad,
+
         model.parameters()
     ),
 
@@ -634,7 +643,7 @@ optimizer = optim.AdamW(
 
 
 # ============================================================
-# LEARNING RATE SCHEDULER
+# 23. LR SCHEDULER
 # ============================================================
 
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -650,10 +659,10 @@ scheduler = optim.lr_scheduler.ReduceLROnPlateau(
 
 
 # ============================================================
-# AMP
+# 24. AMP SETUP
 # ============================================================
 
-use_amp = torch.cuda.is_available()
+use_amp = DEVICE.type == "cuda"
 
 
 if use_amp:
@@ -666,41 +675,7 @@ else:
 
 
 # ============================================================
-# TRAINING HISTORY
-# ============================================================
-
-history = {
-
-    "train_loss": [],
-
-    "valid_loss": [],
-
-    "train_accuracy": [],
-
-    "valid_accuracy": []
-
-}
-
-
-# ============================================================
-# EARLY STOPPING VARIABLES
-# ============================================================
-
-best_val_loss = float("inf")
-
-best_val_accuracy = 0.0
-
-best_epoch = 0
-
-patience_counter = 0
-
-best_model_state = copy.deepcopy(
-    model.state_dict()
-)
-
-
-# ============================================================
-# TRAINING FUNCTION
+# 25. TRAIN ONE EPOCH
 # ============================================================
 
 def train_one_epoch():
@@ -717,12 +692,12 @@ def train_one_epoch():
     for images, labels in train_loader:
 
         images = images.to(
-            device,
+            DEVICE,
             non_blocking=True
         )
 
         labels = labels.to(
-            device,
+            DEVICE,
             non_blocking=True
         )
 
@@ -736,9 +711,7 @@ def train_one_epoch():
 
             with torch.cuda.amp.autocast():
 
-                outputs = model(
-                    images
-                )
+                outputs = model(images)
 
                 loss = criterion(
                     outputs,
@@ -746,24 +719,16 @@ def train_one_epoch():
                 )
 
 
-            scaler.scale(
-                loss
-            ).backward()
+            scaler.scale(loss).backward()
 
-
-            scaler.step(
-                optimizer
-            )
-
+            scaler.step(optimizer)
 
             scaler.update()
 
 
         else:
 
-            outputs = model(
-                images
-            )
+            outputs = model(images)
 
             loss = criterion(
                 outputs,
@@ -775,24 +740,25 @@ def train_one_epoch():
             optimizer.step()
 
 
+        batch_size = images.size(0)
+
+
         running_loss += (
-            loss.item()
-            * images.size(0)
+            loss.item() * batch_size
         )
 
 
-        _, predicted = torch.max(
-            outputs,
-            1
+        predictions = outputs.argmax(
+            dim=1
         )
-
-
-        total += labels.size(0)
 
 
         correct += (
-            predicted == labels
+            predictions == labels
         ).sum().item()
+
+
+        total += batch_size
 
 
     epoch_loss = (
@@ -801,20 +767,18 @@ def train_one_epoch():
 
 
     epoch_accuracy = (
-        100.0 * correct / total
+        correct / total
     )
 
 
-    return (
-        epoch_loss,
-        epoch_accuracy
-    )
+    return epoch_loss, epoch_accuracy
 
 
 # ============================================================
-# VALIDATION FUNCTION
+# 26. VALIDATION
 # ============================================================
 
+@torch.no_grad()
 def validate():
 
     model.eval()
@@ -826,64 +790,59 @@ def validate():
     total = 0
 
 
-    with torch.no_grad():
+    for images, labels in valid_loader:
 
-        for images, labels in valid_loader:
+        images = images.to(
+            DEVICE,
+            non_blocking=True
+        )
 
-            images = images.to(
-                device,
-                non_blocking=True
-            )
-
-            labels = labels.to(
-                device,
-                non_blocking=True
-            )
+        labels = labels.to(
+            DEVICE,
+            non_blocking=True
+        )
 
 
-            if use_amp:
+        if use_amp:
 
-                with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast():
 
-                    outputs = model(
-                        images
-                    )
-
-                    loss = criterion(
-                        outputs,
-                        labels
-                    )
-
-            else:
-
-                outputs = model(
-                    images
-                )
+                outputs = model(images)
 
                 loss = criterion(
                     outputs,
                     labels
                 )
 
+        else:
 
-            running_loss += (
-                loss.item()
-                * images.size(0)
-            )
+            outputs = model(images)
 
-
-            _, predicted = torch.max(
+            loss = criterion(
                 outputs,
-                1
+                labels
             )
 
 
-            total += labels.size(0)
+        batch_size = images.size(0)
 
 
-            correct += (
-                predicted == labels
-            ).sum().item()
+        running_loss += (
+            loss.item() * batch_size
+        )
+
+
+        predictions = outputs.argmax(
+            dim=1
+        )
+
+
+        correct += (
+            predictions == labels
+        ).sum().item()
+
+
+        total += batch_size
 
 
     epoch_loss = (
@@ -892,36 +851,67 @@ def validate():
 
 
     epoch_accuracy = (
-        100.0 * correct / total
+        correct / total
     )
 
 
-    return (
-        epoch_loss,
-        epoch_accuracy
-    )
+    return epoch_loss, epoch_accuracy
 
 
 # ============================================================
-# TRAINING LOOP
+# 27. TRAINING VARIABLES
+# ============================================================
+
+history = {
+
+    "train_loss": [],
+
+    "train_accuracy": [],
+
+    "valid_loss": [],
+
+    "valid_accuracy": [],
+
+    "learning_rate": []
+}
+
+
+best_val_loss = float("inf")
+
+best_val_accuracy = 0.0
+
+best_epoch = 0
+
+patience_counter = 0
+
+best_model_state = None
+
+
+# ============================================================
+# 28. TRAINING LOOP
 # ============================================================
 
 print("\n")
-print("=" * 70)
+print("=" * 80)
 print("STARTING TRAINING")
-print("=" * 70)
+print("=" * 80)
 
 
-for epoch in range(EPOCHS):
+training_start = time.time()
 
-    print("\n")
+
+for epoch in range(
+    1,
+    EPOCHS + 1
+):
+
+    epoch_start = time.time()
+
 
     print(
-        f"Epoch "
-        f"[{epoch + 1}/{EPOCHS}]"
+        f"\nEpoch "
+        f"{epoch}/{EPOCHS}"
     )
-
-    print("-" * 70)
 
 
     # --------------------------------------------------------
@@ -934,26 +924,24 @@ for epoch in range(EPOCHS):
 
 
     # --------------------------------------------------------
-    # VALIDATION
+    # VALIDATE
     # --------------------------------------------------------
 
-    val_loss, val_accuracy = (
+    valid_loss, valid_accuracy = (
         validate()
     )
 
 
     # --------------------------------------------------------
-    # LR SCHEDULER
+    # SCHEDULER
     # --------------------------------------------------------
 
     scheduler.step(
-        val_loss
+        valid_loss
     )
 
 
-    current_lr = optimizer.param_groups[0][
-        "lr"
-    ]
+    current_lr = optimizer.param_groups[0]["lr"]
 
 
     # --------------------------------------------------------
@@ -964,71 +952,90 @@ for epoch in range(EPOCHS):
         train_loss
     )
 
-    history["valid_loss"].append(
-        val_loss
-    )
-
     history["train_accuracy"].append(
         train_accuracy
     )
 
+    history["valid_loss"].append(
+        valid_loss
+    )
+
     history["valid_accuracy"].append(
-        val_accuracy
+        valid_accuracy
+    )
+
+    history["learning_rate"].append(
+        current_lr
     )
 
 
     # --------------------------------------------------------
-    # PRINT METRICS
+    # EPOCH TIME
+    # --------------------------------------------------------
+
+    epoch_time = (
+        time.time()
+        -
+        epoch_start
+    )
+
+
+    # --------------------------------------------------------
+    # PRINT RESULTS
     # --------------------------------------------------------
 
     print(
-        f"Train Loss      : "
+        f"Train Loss: "
         f"{train_loss:.4f}"
     )
 
     print(
-        f"Train Accuracy  : "
-        f"{train_accuracy:.2f}%"
+        f"Train Acc : "
+        f"{train_accuracy * 100:.2f}%"
     )
 
     print(
-        f"Val Loss        : "
-        f"{val_loss:.4f}"
+        f"Valid Loss: "
+        f"{valid_loss:.4f}"
     )
 
     print(
-        f"Val Accuracy    : "
-        f"{val_accuracy:.2f}%"
+        f"Valid Acc : "
+        f"{valid_accuracy * 100:.2f}%"
     )
 
     print(
-        f"Learning Rate   : "
+        f"LR        : "
         f"{current_lr:.8f}"
     )
 
+    print(
+        f"Time      : "
+        f"{epoch_time:.1f}s"
+    )
 
-    # ========================================================
-    # EARLY STOPPING
-    # ========================================================
+
+    # --------------------------------------------------------
+    # CHECK IMPROVEMENT
+    # --------------------------------------------------------
 
     improvement = (
-        best_val_loss - val_loss
+        best_val_loss
+        -
+        valid_loss
     )
 
 
     if improvement > MIN_DELTA:
 
-        # ----------------------------------------------------
-        # Validation improved
-        # ----------------------------------------------------
+        best_val_loss = valid_loss
 
-        best_val_loss = val_loss
+        best_val_accuracy = valid_accuracy
 
-        best_val_accuracy = val_accuracy
-
-        best_epoch = epoch + 1
+        best_epoch = epoch
 
         patience_counter = 0
+
 
         best_model_state = copy.deepcopy(
             model.state_dict()
@@ -1036,7 +1043,7 @@ for epoch in range(EPOCHS):
 
 
         # ----------------------------------------------------
-        # Save best model
+        # SAVE BEST MODEL
         # ----------------------------------------------------
 
         best_model_path = os.path.join(
@@ -1050,26 +1057,27 @@ for epoch in range(EPOCHS):
         torch.save(
 
             {
+
                 "model_state_dict":
-                    model.state_dict(),
+                    best_model_state,
 
-                "class_names":
-                    train_dataset.classes,
-
-                "num_classes":
-                    NUM_CLASSES,
+                "classes":
+                    CLASSES,
 
                 "image_size":
                     IMAGE_SIZE,
 
-                "epoch":
-                    epoch + 1,
+                "best_epoch":
+                    best_epoch,
 
-                "val_loss":
-                    val_loss,
+                "best_val_loss":
+                    best_val_loss,
 
-                "val_accuracy":
-                    val_accuracy
+                "best_val_accuracy":
+                    best_val_accuracy,
+
+                "train_target":
+                    TRAIN_TARGET
 
             },
 
@@ -1078,7 +1086,7 @@ for epoch in range(EPOCHS):
 
 
         print(
-            "\n✓ Validation loss improved."
+            "\n✓ Validation improved."
         )
 
         print(
@@ -1088,74 +1096,101 @@ for epoch in range(EPOCHS):
 
     else:
 
-        # ----------------------------------------------------
-        # No improvement
-        # ----------------------------------------------------
-
         patience_counter += 1
 
 
         print(
-            f"\n⚠ No validation improvement "
-            f"({patience_counter}/{PATIENCE})"
+            f"\nNo significant improvement."
+        )
+
+        print(
+            f"Early stopping counter: "
+            f"{patience_counter}/{PATIENCE}"
         )
 
 
-    # ========================================================
-    # EARLY STOPPING CONDITION
-    # ========================================================
+    # --------------------------------------------------------
+    # EARLY STOPPING
+    # --------------------------------------------------------
 
     if patience_counter >= PATIENCE:
 
-        print("\n")
-
         print(
-            "=" * 70
-        )
-
-        print(
-            "EARLY STOPPING TRIGGERED"
-        )
-
-        print(
-            "=" * 70
-        )
-
-        print(
-            f"Best Epoch       : "
-            f"{best_epoch}"
-        )
-
-        print(
-            f"Best Val Loss    : "
-            f"{best_val_loss:.4f}"
-        )
-
-        print(
-            f"Best Val Accuracy: "
-            f"{best_val_accuracy:.2f}%"
+            "\nEarly stopping triggered."
         )
 
         break
 
 
 # ============================================================
-# RESTORE BEST MODEL
+# 29. TRAINING FINISHED
 # ============================================================
 
-print("\n")
-print("=" * 70)
-print("RESTORING BEST MODEL")
-print("=" * 70)
+training_time = (
+    time.time()
+    -
+    training_start
+)
 
+
+print("\n")
+print("=" * 80)
+print("TRAINING COMPLETED")
+print("=" * 80)
+
+
+print(
+    f"Best epoch      : "
+    f"{best_epoch}"
+)
+
+print(
+    f"Best val loss   : "
+    f"{best_val_loss:.4f}"
+)
+
+print(
+    f"Best val accuracy: "
+    f"{best_val_accuracy * 100:.2f}%"
+)
+
+print(
+    f"Training time   : "
+    f"{training_time / 60:.2f} minutes"
+)
+
+
+# ============================================================
+# 30. SAFETY CHECK
+# ============================================================
+
+if best_model_state is None:
+
+    raise RuntimeError(
+        "\nNo best model was saved.\n"
+        "Validation loss never improved."
+    )
+
+
+# ============================================================
+# 31. RESTORE BEST MODEL
+# ============================================================
+
+print("\nRestoring best model...")
 
 model.load_state_dict(
     best_model_state
 )
 
+model.eval()
+
+print(
+    f"Best epoch {best_epoch} restored."
+)
+
 
 # ============================================================
-# SAVE FINAL BEST MODEL
+# 32. SAVE FINAL MODEL
 # ============================================================
 
 final_model_path = os.path.join(
@@ -1175,7 +1210,7 @@ torch.save(
 
 
 print(
-    f"\nBest model copied to:"
+    f"\n✓ Final model saved:"
 )
 
 print(
@@ -1184,149 +1219,260 @@ print(
 
 
 # ============================================================
-# TEST FUNCTION
+# 33. SAVE MODEL CHECKPOINT
 # ============================================================
 
-def evaluate_test():
+checkpoint_path = os.path.join(
 
-    model.eval()
+    MODEL_DIR,
 
-    all_labels = []
-
-    all_predictions = []
-
-    all_probabilities = []
+    "condition_resnet50_checkpoint.pth"
+)
 
 
-    with torch.no_grad():
+torch.save(
 
-        for images, labels in test_loader:
+    {
 
-            images = images.to(
-                device,
-                non_blocking=True
-            )
+        "model_state_dict":
+            model.state_dict(),
 
+        "classes":
+            CLASSES,
 
-            outputs = model(
-                images
-            )
+        "image_size":
+            IMAGE_SIZE,
 
+        "num_classes":
+            NUM_CLASSES,
 
-            probabilities = torch.softmax(
-                outputs,
-                dim=1
-            )
+        "best_epoch":
+            best_epoch,
 
+        "best_val_loss":
+            best_val_loss,
 
-            _, predictions = torch.max(
-                outputs,
-                1
-            )
+        "best_val_accuracy":
+            best_val_accuracy,
 
+        "train_target":
+            TRAIN_TARGET,
 
-            all_labels.extend(
-                labels.numpy()
-            )
+        "learning_rate":
+            LEARNING_RATE,
 
+        "weight_decay":
+            WEIGHT_DECAY
 
-            all_predictions.extend(
-                predictions.cpu().numpy()
-            )
+    },
 
-
-            all_probabilities.extend(
-                probabilities.cpu().numpy()
-            )
+    checkpoint_path
+)
 
 
-    return (
-        np.array(all_labels),
-        np.array(all_predictions),
-        np.array(all_probabilities)
-    )
+print(
+    f"✓ Checkpoint saved:"
+)
+
+print(
+    checkpoint_path
+)
 
 
 # ============================================================
-# INTERNAL TEST
+# 34. FINAL TEST EVALUATION
 # ============================================================
 
 print("\n")
-print("=" * 70)
-print("INTERNAL TEST EVALUATION")
-print("=" * 70)
+print("=" * 80)
+print("FINAL TEST EVALUATION")
+print("=" * 80)
 
 
-y_true, y_pred, y_prob = evaluate_test()
+model.eval()
+
+
+all_true = []
+
+all_predictions = []
+
+all_probabilities = []
+
+
+test_running_loss = 0.0
+
+test_total = 0
+
+
+with torch.no_grad():
+
+    for images, labels in test_loader:
+
+        images = images.to(
+            DEVICE,
+            non_blocking=True
+        )
+
+        labels = labels.to(
+            DEVICE,
+            non_blocking=True
+        )
+
+
+        if use_amp:
+
+            with torch.cuda.amp.autocast():
+
+                outputs = model(images)
+
+                loss = criterion(
+                    outputs,
+                    labels
+                )
+
+        else:
+
+            outputs = model(images)
+
+            loss = criterion(
+                outputs,
+                labels
+            )
+
+
+        probabilities = torch.softmax(
+            outputs,
+            dim=1
+        )
+
+
+        predictions = outputs.argmax(
+            dim=1
+        )
+
+
+        batch_size = images.size(0)
+
+
+        test_running_loss += (
+            loss.item() * batch_size
+        )
+
+
+        test_total += batch_size
+
+
+        all_true.extend(
+            labels.cpu().numpy()
+        )
+
+
+        all_predictions.extend(
+            predictions.cpu().numpy()
+        )
+
+
+        all_probabilities.extend(
+            probabilities.cpu().numpy()
+        )
 
 
 # ============================================================
-# METRICS
+# 35. TEST METRICS
 # ============================================================
 
-accuracy = accuracy_score(
-    y_true,
-    y_pred
+test_loss = (
+    test_running_loss
+    /
+    test_total
 )
 
 
-precision = precision_score(
-    y_true,
-    y_pred,
+test_accuracy = accuracy_score(
+
+    all_true,
+
+    all_predictions
+)
+
+
+test_precision = precision_score(
+
+    all_true,
+
+    all_predictions,
+
     average="weighted",
+
     zero_division=0
 )
 
 
-recall = recall_score(
-    y_true,
-    y_pred,
+test_recall = recall_score(
+
+    all_true,
+
+    all_predictions,
+
     average="weighted",
+
     zero_division=0
 )
 
 
-f1 = f1_score(
-    y_true,
-    y_pred,
+test_f1 = f1_score(
+
+    all_true,
+
+    all_predictions,
+
     average="weighted",
+
     zero_division=0
-)
-
-
-print("\n")
-print(
-    f"Test Accuracy : "
-    f"{accuracy * 100:.2f}%"
-)
-
-print(
-    f"Precision     : "
-    f"{precision * 100:.2f}%"
-)
-
-print(
-    f"Recall        : "
-    f"{recall * 100:.2f}%"
-)
-
-print(
-    f"F1 Score      : "
-    f"{f1 * 100:.2f}%"
 )
 
 
 # ============================================================
-# CLASSIFICATION REPORT
+# 36. PRINT TEST RESULTS
+# ============================================================
+
+print(
+    f"\nTest Loss      : "
+    f"{test_loss:.4f}"
+)
+
+print(
+    f"Test Accuracy  : "
+    f"{test_accuracy * 100:.2f}%"
+)
+
+print(
+    f"Test Precision : "
+    f"{test_precision * 100:.2f}%"
+)
+
+print(
+    f"Test Recall    : "
+    f"{test_recall * 100:.2f}%"
+)
+
+print(
+    f"Test F1 Score  : "
+    f"{test_f1 * 100:.2f}%"
+)
+
+
+# ============================================================
+# 37. CLASSIFICATION REPORT
 # ============================================================
 
 report = classification_report(
 
-    y_true,
+    all_true,
 
-    y_pred,
+    all_predictions,
 
-    target_names=train_dataset.classes,
+    target_names=CLASSES,
 
     digits=4,
 
@@ -1335,21 +1481,15 @@ report = classification_report(
 
 
 print("\n")
-print("=" * 70)
+print("=" * 80)
+print("CLASSIFICATION REPORT")
+print("=" * 80)
 
-print(
-    "CLASSIFICATION REPORT"
-)
-
-print("=" * 70)
-
-print(
-    report
-)
+print(report)
 
 
 # ============================================================
-# SAVE CLASSIFICATION REPORT
+# 38. SAVE CLASSIFICATION REPORT
 # ============================================================
 
 report_path = os.path.join(
@@ -1367,45 +1507,13 @@ with open(
 ) as file:
 
     file.write(
-        "CAPSICUM RESNET50 CLASSIFICATION REPORT\n"
+        "CAPSICUM RESNET50 - CLASSIFICATION REPORT\n"
     )
 
     file.write(
-        "=" * 70 + "\n\n"
-    )
-
-    file.write(
-        f"Best Epoch: {best_epoch}\n"
-    )
-
-    file.write(
-        f"Best Validation Loss: "
-        f"{best_val_loss:.6f}\n"
-    )
-
-    file.write(
-        f"Best Validation Accuracy: "
-        f"{best_val_accuracy:.2f}%\n\n"
-    )
-
-    file.write(
-        f"Test Accuracy: "
-        f"{accuracy * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted Precision: "
-        f"{precision * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted Recall: "
-        f"{recall * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted F1 Score: "
-        f"{f1 * 100:.2f}%\n\n"
+        "=" * 80
+        +
+        "\n\n"
     )
 
     file.write(
@@ -1414,25 +1522,23 @@ with open(
 
 
 # ============================================================
-# CONFUSION MATRIX
+# 39. CONFUSION MATRIX
 # ============================================================
 
 cm = confusion_matrix(
 
-    y_true,
+    all_true,
 
-    y_pred,
+    all_predictions,
 
-    labels=range(NUM_CLASSES)
+    labels=list(
+        range(NUM_CLASSES)
+    )
 )
 
 
-# ============================================================
-# PLOT CONFUSION MATRIX
-# ============================================================
-
 plt.figure(
-    figsize=(12, 10)
+    figsize=(14, 12)
 )
 
 
@@ -1457,14 +1563,14 @@ tick_marks = np.arange(
 
 plt.xticks(
     tick_marks,
-    train_dataset.classes,
+    CLASSES,
     rotation=90
 )
 
 
 plt.yticks(
     tick_marks,
-    train_dataset.classes
+    CLASSES
 )
 
 
@@ -1478,25 +1584,18 @@ plt.ylabel(
 )
 
 
-# ------------------------------------------------------------
-# Add values inside matrix
-# ------------------------------------------------------------
+# Add values inside cells.
 
 for i in range(NUM_CLASSES):
 
     for j in range(NUM_CLASSES):
 
         plt.text(
-
             j,
-
             i,
-
             str(cm[i, j]),
-
-            horizontalalignment="center",
-
-            verticalalignment="center"
+            ha="center",
+            va="center"
         )
 
 
@@ -1513,7 +1612,7 @@ cm_path = os.path.join(
 
 plt.savefig(
     cm_path,
-    dpi=300,
+    dpi=200,
     bbox_inches="tight"
 )
 
@@ -1522,7 +1621,7 @@ plt.close()
 
 
 print(
-    f"\nConfusion matrix saved:"
+    f"\n✓ Confusion matrix saved:"
 )
 
 print(
@@ -1531,12 +1630,16 @@ print(
 
 
 # ============================================================
-# TRAINING LOSS GRAPH
+# 40. TRAINING LOSS GRAPH
 # ============================================================
 
 epochs_completed = range(
+
     1,
-    len(history["train_loss"]) + 1
+
+    len(
+        history["train_loss"]
+    ) + 1
 )
 
 
@@ -1551,8 +1654,6 @@ plt.plot(
 
     history["train_loss"],
 
-    marker="o",
-
     label="Train Loss"
 )
 
@@ -1562,8 +1663,6 @@ plt.plot(
     epochs_completed,
 
     history["valid_loss"],
-
-    marker="o",
 
     label="Validation Loss"
 )
@@ -1580,7 +1679,7 @@ plt.ylabel(
 
 
 plt.title(
-    "Training and Validation Loss"
+    "Training vs Validation Loss"
 )
 
 
@@ -1592,10 +1691,7 @@ plt.grid(
 )
 
 
-plt.tight_layout()
-
-
-loss_path = os.path.join(
+loss_graph_path = os.path.join(
 
     RESULT_DIR,
 
@@ -1604,8 +1700,11 @@ loss_path = os.path.join(
 
 
 plt.savefig(
-    loss_path,
-    dpi=300,
+
+    loss_graph_path,
+
+    dpi=200,
+
     bbox_inches="tight"
 )
 
@@ -1614,7 +1713,7 @@ plt.close()
 
 
 # ============================================================
-# ACCURACY GRAPH
+# 41. ACCURACY GRAPH
 # ============================================================
 
 plt.figure(
@@ -1626,9 +1725,9 @@ plt.plot(
 
     epochs_completed,
 
-    history["train_accuracy"],
-
-    marker="o",
+    np.array(
+        history["train_accuracy"]
+    ) * 100,
 
     label="Train Accuracy"
 )
@@ -1638,9 +1737,9 @@ plt.plot(
 
     epochs_completed,
 
-    history["valid_accuracy"],
-
-    marker="o",
+    np.array(
+        history["valid_accuracy"]
+    ) * 100,
 
     label="Validation Accuracy"
 )
@@ -1657,7 +1756,7 @@ plt.ylabel(
 
 
 plt.title(
-    "Training and Validation Accuracy"
+    "Training vs Validation Accuracy"
 )
 
 
@@ -1669,10 +1768,7 @@ plt.grid(
 )
 
 
-plt.tight_layout()
-
-
-accuracy_path = os.path.join(
+accuracy_graph_path = os.path.join(
 
     RESULT_DIR,
 
@@ -1681,9 +1777,10 @@ accuracy_path = os.path.join(
 
 
 plt.savefig(
-    accuracy_path,
 
-    dpi=300,
+    accuracy_graph_path,
+
+    dpi=200,
 
     bbox_inches="tight"
 )
@@ -1693,14 +1790,137 @@ plt.close()
 
 
 # ============================================================
-# SAVE TRAINING SUMMARY
+# 42. SAVE HISTORY JSON
 # ============================================================
+
+history_path = os.path.join(
+
+    RESULT_DIR,
+
+    "training_history.json"
+)
+
+
+with open(
+
+    history_path,
+
+    "w",
+
+    encoding="utf-8"
+
+) as file:
+
+    json.dump(
+
+        history,
+
+        file,
+
+        indent=4
+    )
+
+
+# ============================================================
+# 43. SAVE TRAINING SUMMARY
+# ============================================================
+
+summary = {
+
+    "model":
+        "ResNet50",
+
+    "classes":
+        CLASSES,
+
+    "num_classes":
+        NUM_CLASSES,
+
+    "image_size":
+        IMAGE_SIZE,
+
+    "batch_size":
+        BATCH_SIZE,
+
+    "epochs_requested":
+        EPOCHS,
+
+    "epochs_completed":
+        len(
+            history["train_loss"]
+        ),
+
+    "best_epoch":
+        best_epoch,
+
+    "learning_rate":
+        LEARNING_RATE,
+
+    "weight_decay":
+        WEIGHT_DECAY,
+
+    "dropout":
+        DROPOUT,
+
+    "train_target_per_class":
+        TRAIN_TARGET,
+
+    "train_total":
+        total_train,
+
+    "validation_total":
+        total_valid,
+
+    "test_total":
+        total_test,
+
+    "best_validation_loss":
+        best_val_loss,
+
+    "best_validation_accuracy":
+        best_val_accuracy,
+
+    "test_loss":
+        test_loss,
+
+    "test_accuracy":
+        test_accuracy,
+
+    "test_precision_weighted":
+        test_precision,
+
+    "test_recall_weighted":
+        test_recall,
+
+    "test_f1_weighted":
+        test_f1,
+
+    "device":
+        str(DEVICE),
+
+    "trainable_parameters":
+        trainable_parameters,
+
+    "total_parameters":
+        total_parameters,
+
+    "offline_augmentation":
+        True,
+
+    "validation_augmentation":
+        False,
+
+    "test_augmentation":
+        False
+
+}
+
 
 summary_path = os.path.join(
 
     RESULT_DIR,
 
-    "training_summary.txt"
+    "training_summary.json"
 )
 
 
@@ -1714,173 +1934,93 @@ with open(
 
 ) as file:
 
-    file.write(
-        "CAPSICUM RESNET50 TRAINING SUMMARY\n"
+    json.dump(
+
+        summary,
+
+        file,
+
+        indent=4
     )
-
-    file.write(
-        "=" * 70 + "\n\n"
-    )
-
-
-    file.write(
-        f"Device: {device}\n"
-    )
-
-    file.write(
-        f"Image Size: {IMAGE_SIZE}\n"
-    )
-
-    file.write(
-        f"Batch Size: {BATCH_SIZE}\n"
-    )
-
-    file.write(
-        f"Maximum Epochs: {EPOCHS}\n"
-    )
-
-    file.write(
-        f"Learning Rate: {LEARNING_RATE}\n"
-    )
-
-    file.write(
-        f"Weight Decay: {WEIGHT_DECAY}\n"
-    )
-
-    file.write(
-        f"Dropout: {DROPOUT}\n"
-    )
-
-    file.write(
-        f"Patience: {PATIENCE}\n"
-    )
-
-    file.write(
-        f"Min Delta: {MIN_DELTA}\n\n"
-    )
-
-
-    file.write(
-        f"Best Epoch: {best_epoch}\n"
-    )
-
-    file.write(
-        f"Best Validation Loss: "
-        f"{best_val_loss:.6f}\n"
-    )
-
-    file.write(
-        f"Best Validation Accuracy: "
-        f"{best_val_accuracy:.2f}%\n\n"
-    )
-
-
-    file.write(
-        f"Test Accuracy: "
-        f"{accuracy * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted Precision: "
-        f"{precision * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted Recall: "
-        f"{recall * 100:.2f}%\n"
-    )
-
-    file.write(
-        f"Weighted F1 Score: "
-        f"{f1 * 100:.2f}%\n\n"
-    )
-
-
-    file.write(
-        "Classes:\n"
-    )
-
-
-    for index, class_name in enumerate(
-        train_dataset.classes
-    ):
-
-        file.write(
-            f"{index}: {class_name}\n"
-        )
 
 
 # ============================================================
-# FINAL OUTPUT
+# 44. FINAL OUTPUT
 # ============================================================
 
 print("\n")
-print("=" * 70)
+print("=" * 80)
+print("TRAINING PIPELINE FINISHED")
+print("=" * 80)
 
+print("\nModel:")
 print(
-    "TRAINING COMPLETED"
+    f"  {final_model_path}"
 )
 
-print("=" * 70)
-
-
+print("\nBest model:")
 print(
-    f"\nBest Epoch:"
-    f" {best_epoch}"
+    os.path.join(
+        MODEL_DIR,
+        "condition_resnet50_best.pth"
+    )
 )
 
-
+print("\nClassification report:")
 print(
-    f"Best Validation Accuracy:"
-    f" {best_val_accuracy:.2f}%"
+    report_path
 )
 
-
+print("\nConfusion matrix:")
 print(
-    f"\nFinal Test Accuracy:"
-    f" {accuracy * 100:.2f}%"
+    cm_path
 )
 
-
+print("\nLoss curve:")
 print(
-    f"Weighted Precision:"
-    f" {precision * 100:.2f}%"
+    loss_graph_path
 )
 
-
+print("\nAccuracy curve:")
 print(
-    f"Weighted Recall:"
-    f" {recall * 100:.2f}%"
+    accuracy_graph_path
 )
 
-
+print("\nTraining history:")
 print(
-    f"Weighted F1:"
-    f" {f1 * 100:.2f}%"
+    history_path
 )
 
+print("\nTraining summary:")
+print(
+    summary_path
+)
 
 print("\n")
+print("=" * 80)
+print("FINAL TEST RESULT")
+print("=" * 80)
+
 print(
-    "Model:"
+    f"Accuracy : "
+    f"{test_accuracy * 100:.2f}%"
 )
 
 print(
-    final_model_path
-)
-
-
-print("\n")
-print(
-    "Results:"
+    f"Precision: "
+    f"{test_precision * 100:.2f}%"
 )
 
 print(
-    RESULT_DIR
+    f"Recall   : "
+    f"{test_recall * 100:.2f}%"
 )
 
+print(
+    f"F1 Score : "
+    f"{test_f1 * 100:.2f}%"
+)
 
-print("\n")
-print("=" * 70)
-print("DONE")
-print("=" * 70)
+print("=" * 80)
+
+print("\nDONE.")

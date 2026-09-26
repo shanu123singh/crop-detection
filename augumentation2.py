@@ -655,6 +655,7 @@ def split_groups(
 
     print("\n" + "=" * 70)
     print("STEP 4: CLEAN 80/10/10 GROUP-WISE SPLIT")
+    print("ONE NEAR-DUPLICATE GROUP = ONE SPLIT")
     print("=" * 70)
 
     # --------------------------------------------------------
@@ -662,7 +663,6 @@ def split_groups(
     # --------------------------------------------------------
 
     if os.path.exists(SPLIT_DIR):
-
         shutil.rmtree(SPLIT_DIR)
 
     # --------------------------------------------------------
@@ -674,9 +674,7 @@ def split_groups(
         "valid",
         "test"
     ]:
-
         for class_name in CLASSES:
-
             os.makedirs(
                 os.path.join(
                     SPLIT_DIR,
@@ -687,201 +685,186 @@ def split_groups(
             )
 
     # --------------------------------------------------------
-    # Group by class
+    # IMPORTANT:
+    # A near-duplicate group must be assigned exactly once.
+    #
+    # This is especially important for cross-class groups.
+    # The complete group stays in the same split, while each
+    # image is still copied into its own original class folder.
     # --------------------------------------------------------
 
-    class_groups = defaultdict(list)
+    all_groups = list(groups)
+    random.shuffle(all_groups)
 
-    for group in groups:
+    total_images = sum(
+        len(group["images"])
+        for group in all_groups
+    )
 
-        class_names = set(
-            item["class"]
-            for item in group["images"]
-        )
+    target_train = int(total_images * TRAIN_RATIO)
+    target_valid = int(total_images * VALID_RATIO)
 
-        # ----------------------------------------------------
-        # If a near-duplicate group contains multiple classes
-        # keep the complete group together.
-        # ----------------------------------------------------
+    train_groups = []
+    valid_groups = []
+    test_groups = []
 
-        if len(class_names) == 1:
+    train_count = 0
+    valid_count = 0
+    test_count = 0
 
-            class_name = next(
-                iter(class_names)
-            )
+    # --------------------------------------------------------
+    # Greedy group-wise 80/10/10 assignment
+    # --------------------------------------------------------
 
-            class_groups[class_name].append(
-                group
-            )
+    for group in all_groups:
 
+        group_size = len(group["images"])
+
+        # Prefer train until its target is reached.
+        if train_count + group_size <= target_train:
+            train_groups.append(group)
+            train_count += group_size
+
+        # Then validation.
+        elif valid_count + group_size <= target_valid:
+            valid_groups.append(group)
+            valid_count += group_size
+
+        # Remaining groups go to test.
         else:
-
-            # Cross-class group
-            # Keep together using a special group
-            # based on the first class.
-            #
-            # This is intentionally not silently relabeled.
-
-            for class_name in class_names:
-
-                class_groups[
-                    class_name
-                ].append(group)
+            test_groups.append(group)
+            test_count += group_size
 
     # --------------------------------------------------------
-    # Split each class
+    # Copy groups
+    # --------------------------------------------------------
+
+    def copy_groups(
+        group_list,
+        split_name
+    ):
+
+        copied_by_class = defaultdict(int)
+
+        for group in group_list:
+
+            for item in group["images"]:
+
+                source = item["path"]
+                item_class = item["class"]
+
+                destination_dir = os.path.join(
+                    SPLIT_DIR,
+                    split_name,
+                    item_class
+                )
+
+                os.makedirs(
+                    destination_dir,
+                    exist_ok=True
+                )
+
+                destination = os.path.join(
+                    destination_dir,
+                    os.path.basename(source)
+                )
+
+                # Avoid filename collision
+                if os.path.exists(destination):
+
+                    base, ext = os.path.splitext(
+                        os.path.basename(source)
+                    )
+
+                    counter = 1
+                    while True:
+
+                        candidate = os.path.join(
+                            destination_dir,
+                            f"{base}_{counter}{ext}"
+                        )
+
+                        if not os.path.exists(candidate):
+                            destination = candidate
+                            break
+
+                        counter += 1
+
+                shutil.copy2(
+                    source,
+                    destination
+                )
+
+                copied_by_class[item_class] += 1
+
+        return dict(copied_by_class)
+
+    train_by_class = copy_groups(
+        train_groups,
+        "train"
+    )
+
+    valid_by_class = copy_groups(
+        valid_groups,
+        "valid"
+    )
+
+    test_by_class = copy_groups(
+        test_groups,
+        "test"
+    )
+
+    # --------------------------------------------------------
+    # Per-class summary
     # --------------------------------------------------------
 
     split_summary = {}
 
     for class_name in CLASSES:
 
-        groups_for_class = class_groups[class_name]
-
-        random.shuffle(
-            groups_for_class
+        class_train = train_by_class.get(
+            class_name,
+            0
         )
 
-        total_images = sum(
-            len(group["images"])
-            for group in groups_for_class
+        class_valid = valid_by_class.get(
+            class_name,
+            0
         )
 
-        target_train = int(
-            total_images * TRAIN_RATIO
+        class_test = test_by_class.get(
+            class_name,
+            0
         )
 
-        target_valid = int(
-            total_images * VALID_RATIO
-        )
-
-        train_count = 0
-        valid_count = 0
-        test_count = 0
-
-        train_groups = []
-        valid_groups = []
-        test_groups = []
-
-        # ----------------------------------------------------
-        # Greedy group assignment
-        # ----------------------------------------------------
-
-        for group in groups_for_class:
-
-            group_size = len(
-                group["images"]
-            )
-
-            if (
-                train_count + group_size
-                <= target_train
-            ):
-
-                train_groups.append(group)
-
-                train_count += group_size
-
-            elif (
-                valid_count + group_size
-                <= target_valid
-            ):
-
-                valid_groups.append(group)
-
-                valid_count += group_size
-
-            else:
-
-                test_groups.append(group)
-
-                test_count += group_size
-
-        # ----------------------------------------------------
-        # Copy images
-        # ----------------------------------------------------
-
-        def copy_groups(
-            group_list,
-            split_name
-        ):
-
-            copied = 0
-
-            for group in group_list:
-
-                for item in group["images"]:
-
-                    source = item["path"]
-
-                    item_class = item["class"]
-
-                    destination_dir = os.path.join(
-                        SPLIT_DIR,
-                        split_name,
-                        item_class
-                    )
-
-                    os.makedirs(
-                        destination_dir,
-                        exist_ok=True
-                    )
-
-                    destination = os.path.join(
-                        destination_dir,
-                        os.path.basename(source)
-                    )
-
-                    # Avoid filename collision
-                    if os.path.exists(destination):
-
-                        base, ext = os.path.splitext(
-                            os.path.basename(source)
-                        )
-
-                        destination = os.path.join(
-                            destination_dir,
-                            f"{base}_{copied}{ext}"
-                        )
-
-                    shutil.copy2(
-                        source,
-                        destination
-                    )
-
-                    copied += 1
-
-            return copied
-
-        copied_train = copy_groups(
-            train_groups,
-            "train"
-        )
-
-        copied_valid = copy_groups(
-            valid_groups,
-            "valid"
-        )
-
-        copied_test = copy_groups(
-            test_groups,
-            "test"
+        class_total = (
+            class_train +
+            class_valid +
+            class_test
         )
 
         split_summary[class_name] = {
-            "total": total_images,
-            "train": copied_train,
-            "valid": copied_valid,
-            "test": copied_test
+            "total": class_total,
+            "train": class_train,
+            "valid": class_valid,
+            "test": class_test
         }
 
         print(
             f"{class_name:<25} "
-            f"Total={total_images:<5} "
-            f"Train={copied_train:<5} "
-            f"Valid={copied_valid:<5} "
-            f"Test={copied_test:<5}"
+            f"Total={class_total:<5} "
+            f"Train={class_train:<5} "
+            f"Valid={class_valid:<5} "
+            f"Test={class_test:<5}"
         )
+
+    print(
+        "\nGlobal split totals: "
+        f"Train={train_count}, "
+        f"Valid={valid_count}, "
+        f"Test={test_count}, "
+        f"Total={total_images}"
+    )
 
     # --------------------------------------------------------
     # Save split report
@@ -899,7 +882,27 @@ def split_groups(
     ) as file:
 
         json.dump(
-            split_summary,
+            {
+                "global": {
+                    "total": total_images,
+                    "train": train_count,
+                    "valid": valid_count,
+                    "test": test_count,
+                    "train_ratio_actual": (
+                        train_count / total_images
+                        if total_images else 0
+                    ),
+                    "valid_ratio_actual": (
+                        valid_count / total_images
+                        if total_images else 0
+                    ),
+                    "test_ratio_actual": (
+                        test_count / total_images
+                        if total_images else 0
+                    )
+                },
+                "per_class": split_summary
+            },
             file,
             indent=4
         )
@@ -1188,7 +1191,29 @@ def augment_training_data():
         # Generate augmented images
         # ----------------------------------------------------
 
+        if not images:
+
+            print(
+                "WARNING: No valid training images found "
+                f"for class: {class_name}"
+            )
+
+            augmentation_summary[class_name] = {
+                "original_train": 0,
+                "augmentation": strength,
+                "generated": 0,
+                "final_train": 0,
+                "status": "FAILED_NO_SOURCE_IMAGES"
+            }
+
+            continue
+
         generated = 0
+        failed_attempts = 0
+        max_failed_attempts = max(
+            100,
+            (TRAIN_TARGET - original_count) * 10
+        )
 
         while current_count < TRAIN_TARGET:
 
@@ -1229,11 +1254,22 @@ def augment_training_data():
 
             except Exception as error:
 
+                failed_attempts += 1
+
                 print(
                     "Augmentation error:",
                     source,
                     error
                 )
+
+                if failed_attempts >= max_failed_attempts:
+
+                    print(
+                        "WARNING: Too many augmentation failures "
+                        f"for class: {class_name}"
+                    )
+
+                    break
 
         print(
             "Generated:",
@@ -1249,7 +1285,12 @@ def augment_training_data():
             "original_train": original_count,
             "augmentation": strength,
             "generated": generated,
-            "final_train": current_count
+            "final_train": current_count,
+            "status": (
+                "PASS"
+                if current_count == TRAIN_TARGET
+                else "INCOMPLETE"
+            )
         }
 
     # --------------------------------------------------------
@@ -1616,7 +1657,11 @@ def save_final_summary(
             "train_target_per_class": TRAIN_TARGET,
             "train_only": True,
             "validation_augmented": False,
-            "test_augmented": False
+            "test_augmented": False,
+            "strategy_based_on": "actual_train_count_after_split",
+            "strong_if_train_count_below": 300,
+            "moderate_if_train_count_300_to_800": True,
+            "light_if_train_count_above_800": True
         },
 
         "duplicate_detection": {

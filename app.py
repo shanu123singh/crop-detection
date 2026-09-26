@@ -1,6 +1,6 @@
+
 import os
 import io
-
 from typing import List
 
 import torch
@@ -33,7 +33,7 @@ BASE_DIR = os.path.dirname(
 
 
 # ============================================================
-# CNN MODEL PATH
+# MODEL PATH
 # ============================================================
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "")
@@ -50,6 +50,20 @@ if not MODEL_PATH or not os.path.exists(MODEL_PATH):
 
 # ============================================================
 # DATASET PATHS
+#
+# IMPORTANT:
+#
+# train:
+#     augmented_dataset/train
+#
+# validation:
+#     dataset_split/valid
+#
+# test:
+#     dataset_split/test
+#
+# Only TRAIN was augmented.
+# Validation and TEST remain untouched.
 # ============================================================
 
 TRAIN_DIR = os.path.join(
@@ -60,30 +74,36 @@ TRAIN_DIR = os.path.join(
 
 VALID_DIR = os.path.join(
     BASE_DIR,
-    "augmented_dataset",
+    "dataset_split",
     "valid"
 )
 
 TEST_DIR = os.path.join(
     BASE_DIR,
-    "augmented_dataset",
+    "dataset_split",
     "test"
 )
 
 
 # ============================================================
 # MODEL CONFIGURATION
+#
+# Matches train_augu.py
 # ============================================================
 
 IMAGE_SIZE = 224
 
+NUM_CLASSES = 12
+
 TOP_K = 5
 
-NUM_CLASSES = 12
+DROPOUT = 0.30
 
 
 # ============================================================
-# EXPECTED CNN CLASS ORDER
+# EXPECTED CLASS ORDER
+#
+# This must exactly match train_augu.py
 # ============================================================
 
 EXPECTED_CLASSES = [
@@ -134,28 +154,52 @@ DEVICE = torch.device(
 
 app = FastAPI(
 
-    title="Capsicum Plant Disease Detection API",
+    title="Capsicum Plant Condition Detection API",
 
     description="""
 
-    ResNet50 based Capsicum Plant
-    Disease / Condition Detection API.
+ResNet50 based Capsicum Plant Condition Detection API.
 
-    Input:
-    - Capsicum plant image
+Model:
+    ResNet50
 
-    Output:
-    - Predicted disease / condition
-    - Confidence
-    - Top predictions
-    - Class information
+Classes:
+    12
 
-    This API contains only the CNN model.
-    Soil and crop prediction modules are not included.
+Input:
+    Capsicum plant / leaf image
 
-    """,
+Output:
+    Predicted condition
+    Confidence
+    Top-5 predictions
+    Class information
 
-    version="3.0.0"
+Training pipeline:
+
+    data new
+        ↓
+    duplicate-safe split
+        ↓
+    dataset_split
+        ├── train
+        ├── valid
+        └── test
+        ↓
+    train-only offline augmentation
+        ↓
+    augmented_dataset/train
+        ↓
+    ResNet50 training
+
+Validation and test images are NOT augmented.
+
+This API contains only the CNN model.
+Soil and crop prediction modules are not included.
+
+""",
+
+    version="4.0.0"
 
 )
 
@@ -180,17 +224,22 @@ app.add_middleware(
 
 
 # ============================================================
-# CNN INFERENCE TRANSFORM
+# INFERENCE TRANSFORM
+#
+# IMPORTANT:
+# No random augmentation during prediction.
+#
+# train_augu.py:
+#     Resize -> Tensor -> Normalize
+#
+# API:
+#     Same deterministic preprocessing
 # ============================================================
 
 INFERENCE_TRANSFORM = transforms.Compose([
 
     transforms.Resize(
-        256
-    ),
-
-    transforms.CenterCrop(
-        IMAGE_SIZE
+        (IMAGE_SIZE, IMAGE_SIZE)
     ),
 
     transforms.ToTensor(),
@@ -215,20 +264,20 @@ INFERENCE_TRANSFORM = transforms.Compose([
 
 
 # ============================================================
-# GLOBAL CNN VARIABLES
+# GLOBAL VARIABLES
 # ============================================================
 
 model = None
 
 MODEL_CLASSES = []
 
-CHECKPOINT_INFO = {}
-
 MODEL_ARCHITECTURE = "Unknown"
+
+CHECKPOINT_INFO = {}
 
 
 # ============================================================
-# IMAGE EXTENSIONS
+# SUPPORTED IMAGE EXTENSIONS
 # ============================================================
 
 IMAGE_EXTENSIONS = (
@@ -248,23 +297,15 @@ IMAGE_EXTENSIONS = (
 # COUNT IMAGES
 # ============================================================
 
-def count_images(
-    directory
-):
+def count_images(directory: str):
 
-    if not os.path.isdir(
-        directory
-    ):
+    if not os.path.isdir(directory):
 
         return 0
 
-
     total = 0
 
-
-    for root, _, files in os.walk(
-        directory
-    ):
+    for root, _, files in os.walk(directory):
 
         for filename in files:
 
@@ -274,7 +315,6 @@ def count_images(
 
                 total += 1
 
-
     return total
 
 
@@ -282,19 +322,9 @@ def count_images(
 # COUNT IMAGES PER CLASS
 # ============================================================
 
-def count_images_per_class(
-    directory
-):
+def count_images_per_class(directory: str):
 
     result = {}
-
-
-    if not os.path.isdir(
-        directory
-    ):
-
-        return result
-
 
     for class_name in EXPECTED_CLASSES:
 
@@ -306,13 +336,9 @@ def count_images_per_class(
 
         )
 
-
         result[class_name] = count_images(
-
             class_dir
-
         )
-
 
     return result
 
@@ -321,9 +347,7 @@ def count_images_per_class(
 # EXTRACT STATE DICT
 # ============================================================
 
-def extract_state_dict(
-    checkpoint
-):
+def extract_state_dict(checkpoint):
 
     if not isinstance(
         checkpoint,
@@ -332,20 +356,17 @@ def extract_state_dict(
 
         return checkpoint
 
-
     if "model_state_dict" in checkpoint:
 
         return checkpoint[
             "model_state_dict"
         ]
 
-
     if "state_dict" in checkpoint:
 
         return checkpoint[
             "state_dict"
         ]
-
 
     return checkpoint
 
@@ -354,26 +375,19 @@ def extract_state_dict(
 # CLEAN STATE DICT
 # ============================================================
 
-def clean_state_dict(
-    state_dict
-):
+def clean_state_dict(state_dict):
 
     cleaned = {}
 
-
     for key, value in state_dict.items():
 
-        if key.startswith(
-            "module."
-        ):
+        if key.startswith("module."):
 
             key = key[
                 len("module.") :
             ]
 
-
         cleaned[key] = value
-
 
     return cleaned
 
@@ -382,14 +396,16 @@ def clean_state_dict(
 # GET MODEL CLASSES
 # ============================================================
 
-def get_model_classes(
-    checkpoint
-):
+def get_model_classes(checkpoint):
 
     if isinstance(
         checkpoint,
         dict
     ):
+
+        # ----------------------------------------------------
+        # Preferred: classes saved inside checkpoint
+        # ----------------------------------------------------
 
         if "classes" in checkpoint:
 
@@ -397,6 +413,9 @@ def get_model_classes(
                 checkpoint["classes"]
             )
 
+        # ----------------------------------------------------
+        # class_to_idx
+        # ----------------------------------------------------
 
         if "class_to_idx" in checkpoint:
 
@@ -404,8 +423,7 @@ def get_model_classes(
                 "class_to_idx"
             ]
 
-
-            classes = [
+            return [
 
                 class_name
 
@@ -421,9 +439,9 @@ def get_model_classes(
 
             ]
 
-
-            return classes
-
+    # --------------------------------------------------------
+    # Current train_augu.py class order
+    # --------------------------------------------------------
 
     return EXPECTED_CLASSES.copy()
 
@@ -432,9 +450,11 @@ def get_model_classes(
 # VALIDATE CLASSES
 # ============================================================
 
-def validate_classes(
-    classes
-):
+def validate_classes(classes):
+
+    # --------------------------------------------------------
+    # Number of classes
+    # --------------------------------------------------------
 
     if len(classes) != NUM_CLASSES:
 
@@ -446,42 +466,24 @@ def validate_classes(
 
         )
 
+    # --------------------------------------------------------
+    # Exact order
+    #
+    # IMPORTANT:
+    # Class order must match model output indices.
+    # --------------------------------------------------------
 
-    if set(classes) != set(
-        EXPECTED_CLASSES
-    ):
-
-        missing = sorted(
-
-            set(EXPECTED_CLASSES)
-            -
-            set(classes)
-
-        )
-
-
-        extra = sorted(
-
-            set(classes)
-            -
-            set(EXPECTED_CLASSES)
-
-        )
-
+    if classes != EXPECTED_CLASSES:
 
         raise RuntimeError(
 
-            "Model classes do not match "
-            "the expected 12 classes.\n\n"
+            "CRITICAL: Model class order does not "
+            "match train_augu.py.\n\n"
 
-            f"Missing classes: {missing}\n"
-
-            f"Extra classes: {extra}\n\n"
-
-            f"Expected order: "
+            f"Expected order:\n"
             f"{EXPECTED_CLASSES}\n\n"
 
-            f"Checkpoint order: "
+            f"Model order:\n"
             f"{classes}"
 
         )
@@ -491,9 +493,7 @@ def validate_classes(
 # PRINT FC LAYERS
 # ============================================================
 
-def print_fc_layers(
-    state_dict
-):
+def print_fc_layers(state_dict):
 
     print()
 
@@ -509,18 +509,13 @@ def print_fc_layers(
         "-" * 70
     )
 
-
     found = False
-
 
     for key, value in state_dict.items():
 
-        if key.startswith(
-            "fc."
-        ):
+        if key.startswith("fc."):
 
             found = True
-
 
             if hasattr(
                 value,
@@ -529,7 +524,7 @@ def print_fc_layers(
 
                 print(
 
-                    f"{key:<20} "
+                    f"{key:<20}"
                     f"{tuple(value.shape)}"
 
                 )
@@ -540,13 +535,11 @@ def print_fc_layers(
                     f"{key:<20}"
                 )
 
-
     if not found:
 
         print(
             "No FC layers found."
         )
-
 
     print(
         "-" * 70
@@ -555,315 +548,142 @@ def print_fc_layers(
 
 # ============================================================
 # BUILD RESNET50
+#
+# EXACT ARCHITECTURE FROM train_augu.py:
+#
+# ResNet50
+#     ↓
+# Layer4 trainable
+#     ↓
+# FC
+#     Dropout(0.30)
+#     Linear(2048, 12)
+#
+# During inference dropout is automatically disabled
+# because model.eval() is used.
 # ============================================================
 
-def build_model(
-    state_dict
-):
+def build_model(state_dict):
 
     global MODEL_ARCHITECTURE
 
+    # --------------------------------------------------------
+    # Base ResNet50
+    # --------------------------------------------------------
 
     network = models.resnet50(
         weights=None
     )
 
-
     num_features = (
         network.fc.in_features
     )
 
-
-    # ========================================================
-    # ARCHITECTURE 1
+    # --------------------------------------------------------
+    # Expected current architecture
     #
-    # Dropout
-    # Linear(2048,512)
-    # ReLU
-    # Dropout
-    # Linear(512,12)
-    # ========================================================
+    # fc.0 = Dropout
+    # fc.1 = Linear
+    # --------------------------------------------------------
 
     if (
-
-        "fc.1.weight" in state_dict
-
-        and
-
-        "fc.4.weight" in state_dict
-
+        "fc.1.weight" not in state_dict
+        or
+        "fc.1.bias" not in state_dict
     ):
 
-        first_weight = state_dict[
-            "fc.1.weight"
-        ]
-
-        final_weight = state_dict[
-            "fc.4.weight"
-        ]
-
-
-        first_in = (
-            first_weight.shape[1]
+        print_fc_layers(
+            state_dict
         )
 
-        hidden_features = (
-            first_weight.shape[0]
-        )
+        raise RuntimeError(
 
-        final_in = (
-            final_weight.shape[1]
-        )
+            "Checkpoint does not match "
+            "the current train_augu.py "
+            "architecture.\n\n"
 
-        final_out = (
-            final_weight.shape[0]
-        )
+            "Expected classifier:\n"
 
-
-        if first_in != num_features:
-
-            raise RuntimeError(
-
-                "Classifier input mismatch. "
-
-                f"Expected {num_features}, "
-
-                f"found {first_in}."
-
-            )
-
-
-        if hidden_features != final_in:
-
-            raise RuntimeError(
-
-                "Classifier hidden dimension "
-                "mismatch."
-
-            )
-
-
-        if final_out != NUM_CLASSES:
-
-            raise RuntimeError(
-
-                "Classifier output mismatch. "
-
-                f"Expected {NUM_CLASSES}, "
-
-                f"found {final_out}."
-
-            )
-
-
-        network.fc = nn.Sequential(
-
-            nn.Dropout(
-                p=0.30
-            ),
-
-            nn.Linear(
-                first_in,
-                hidden_features
-            ),
-
-            nn.ReLU(
-                inplace=True
-            ),
-
-            nn.Dropout(
-                p=0.30
-            ),
-
-            nn.Linear(
-                final_in,
-                final_out
-            )
+            "Dropout(0.30) + "
+            "Linear(2048,12)"
 
         )
 
+    # --------------------------------------------------------
+    # FC weight
+    # --------------------------------------------------------
 
-        MODEL_ARCHITECTURE = (
+    fc_weight = state_dict[
+        "fc.1.weight"
+    ]
 
-            "ResNet50 + "
-            "Dropout + Linear(2048,512) "
-            "+ ReLU + Dropout + "
-            "Linear(512,12)"
+    fc_bias = state_dict[
+        "fc.1.bias"
+    ]
 
-        )
+    fc_in = fc_weight.shape[1]
 
+    fc_out = fc_weight.shape[0]
 
-    # ========================================================
-    # ARCHITECTURE 2
-    #
-    # Linear(2048,hidden)
-    # ReLU
-    # Dropout
-    # Linear(hidden,12)
-    # ========================================================
+    # --------------------------------------------------------
+    # Validate input features
+    # --------------------------------------------------------
 
-    elif (
+    if fc_in != num_features:
 
-        "fc.0.weight" in state_dict
+        raise RuntimeError(
 
-        and
+            "FC input mismatch.\n"
 
-        "fc.3.weight" in state_dict
+            f"Expected: {num_features}\n"
 
-    ):
-
-        first_weight = state_dict[
-            "fc.0.weight"
-        ]
-
-        final_weight = state_dict[
-            "fc.3.weight"
-        ]
-
-
-        first_in = (
-            first_weight.shape[1]
-        )
-
-        hidden_features = (
-            first_weight.shape[0]
-        )
-
-        final_in = (
-            final_weight.shape[1]
-        )
-
-        final_out = (
-            final_weight.shape[0]
-        )
-
-
-        if first_in != num_features:
-
-            raise RuntimeError(
-
-                "Classifier input mismatch. "
-
-                f"Expected {num_features}, "
-
-                f"found {first_in}."
-
-            )
-
-
-        if hidden_features != final_in:
-
-            raise RuntimeError(
-
-                "Classifier hidden dimension "
-                "mismatch."
-
-            )
-
-
-        if final_out != NUM_CLASSES:
-
-            raise RuntimeError(
-
-                "Final classifier output must "
-
-                f"be {NUM_CLASSES}. "
-
-                f"Found {final_out}."
-
-            )
-
-
-        network.fc = nn.Sequential(
-
-            nn.Linear(
-                first_in,
-                hidden_features
-            ),
-
-            nn.ReLU(
-                inplace=True
-            ),
-
-            nn.Dropout(
-                p=0.30
-            ),
-
-            nn.Linear(
-                final_in,
-                final_out
-            )
+            f"Found: {fc_in}"
 
         )
 
+    # --------------------------------------------------------
+    # Validate output classes
+    # --------------------------------------------------------
 
-        MODEL_ARCHITECTURE = (
+    if fc_out != NUM_CLASSES:
 
-            "ResNet50 + "
-            "Linear(2048,hidden) + ReLU "
-            "+ Dropout + "
-            "Linear(hidden,12)"
+        raise RuntimeError(
+
+            "FC output mismatch.\n"
+
+            f"Expected: {NUM_CLASSES}\n"
+
+            f"Found: {fc_out}"
 
         )
 
+    # --------------------------------------------------------
+    # Validate bias
+    # --------------------------------------------------------
 
-    # ========================================================
-    # ARCHITECTURE 3
-    #
-    # Simple Linear(2048,12)
-    # ========================================================
+    if fc_bias.shape[0] != NUM_CLASSES:
 
-    elif (
+        raise RuntimeError(
 
-        "fc.weight" in state_dict
+            "FC bias dimension mismatch.\n"
 
-        and
+            f"Expected: {NUM_CLASSES}\n"
 
-        "fc.bias" in state_dict
+            f"Found: {fc_bias.shape[0]}"
 
-    ):
-
-        weight = state_dict[
-            "fc.weight"
-        ]
-
-
-        fc_in = (
-            weight.shape[1]
         )
 
-        fc_out = (
-            weight.shape[0]
-        )
+    # --------------------------------------------------------
+    # EXACT classifier
+    # --------------------------------------------------------
 
+    network.fc = nn.Sequential(
 
-        if fc_in != num_features:
+        nn.Dropout(
+            p=DROPOUT
+        ),
 
-            raise RuntimeError(
-
-                "FC input mismatch. "
-
-                f"Expected {num_features}, "
-
-                f"found {fc_in}."
-
-            )
-
-
-        if fc_out != NUM_CLASSES:
-
-            raise RuntimeError(
-
-                "FC output mismatch. "
-
-                f"Expected {NUM_CLASSES}, "
-
-                f"found {fc_out}."
-
-            )
-
-
-        network.fc = nn.Linear(
+        nn.Linear(
 
             fc_in,
 
@@ -871,110 +691,19 @@ def build_model(
 
         )
 
+    )
 
-        MODEL_ARCHITECTURE = (
+    MODEL_ARCHITECTURE = (
 
-            "ResNet50 + Linear(2048,12)"
+        "ResNet50 + "
+        "Dropout(0.30) + "
+        "Linear(2048,12)"
 
-        )
+    )
 
-
-    # ========================================================
-    # ARCHITECTURE 4
-    #
-    # Dropout + Linear(2048,12)
-    # ========================================================
-
-    elif (
-
-        "fc.1.weight" in state_dict
-
-        and
-
-        "fc.1.bias" in state_dict
-
-    ):
-
-        weight = state_dict[
-            "fc.1.weight"
-        ]
-
-
-        fc_in = (
-            weight.shape[1]
-        )
-
-        fc_out = (
-            weight.shape[0]
-        )
-
-
-        if fc_in != num_features:
-
-            raise RuntimeError(
-
-                "FC input mismatch. "
-
-                f"Expected {num_features}, "
-
-                f"found {fc_in}."
-
-            )
-
-
-        if fc_out != NUM_CLASSES:
-
-            raise RuntimeError(
-
-                "FC output mismatch. "
-
-                f"Expected {NUM_CLASSES}, "
-
-                f"found {fc_out}."
-
-            )
-
-
-        network.fc = nn.Sequential(
-
-            nn.Dropout(
-                p=0.30
-            ),
-
-            nn.Linear(
-                fc_in,
-                fc_out
-            )
-
-        )
-
-
-        MODEL_ARCHITECTURE = (
-
-            "ResNet50 + Dropout + "
-            "Linear(2048,12)"
-
-        )
-
-
-    else:
-
-        print_fc_layers(
-            state_dict
-        )
-
-
-        raise RuntimeError(
-
-            "Unable to detect the classifier "
-            "architecture from the checkpoint."
-
-        )
-
-
-    # ========================================================
-    # LOAD STATE DICT
-    # ========================================================
+    # --------------------------------------------------------
+    # Load weights
+    # --------------------------------------------------------
 
     try:
 
@@ -990,35 +719,41 @@ def build_model(
 
         raise RuntimeError(
 
-            "Model architecture does not match "
-            "the checkpoint.\n\n"
+            "Model architecture does not "
+            "match the checkpoint.\n\n"
 
             f"{error}"
 
         )
 
+    # --------------------------------------------------------
+    # Device
+    # --------------------------------------------------------
 
     network = network.to(
         DEVICE
     )
 
+    # --------------------------------------------------------
+    # Evaluation mode
+    # --------------------------------------------------------
 
     network.eval()
-
 
     return network
 
 
 # ============================================================
-# LOAD CNN MODEL
+# LOAD MODEL
 # ============================================================
 
 def load_model():
 
     global model
-    global MODEL_CLASSES
-    global CHECKPOINT_INFO
 
+    global MODEL_CLASSES
+
+    global CHECKPOINT_INFO
 
     print()
 
@@ -1034,10 +769,9 @@ def load_model():
         "=" * 80
     )
 
-
-    # ========================================================
-    # CHECK MODEL FILE
-    # ========================================================
+    # --------------------------------------------------------
+    # Model file check
+    # --------------------------------------------------------
 
     if not os.path.isfile(
         MODEL_PATH
@@ -1051,10 +785,9 @@ def load_model():
 
         )
 
-
-    # ========================================================
-    # LOAD CHECKPOINT
-    # ========================================================
+    # --------------------------------------------------------
+    # Load checkpoint
+    # --------------------------------------------------------
 
     try:
 
@@ -1078,10 +811,9 @@ def load_model():
 
         )
 
-
-    # ========================================================
-    # CHECKPOINT INFORMATION
-    # ========================================================
+    # --------------------------------------------------------
+    # Save checkpoint information
+    # --------------------------------------------------------
 
     if isinstance(
         checkpoint,
@@ -1094,56 +826,49 @@ def load_model():
 
         CHECKPOINT_INFO = {}
 
-
-    # ========================================================
-    # STATE DICT
-    # ========================================================
+    # --------------------------------------------------------
+    # Extract state dict
+    # --------------------------------------------------------
 
     state_dict = extract_state_dict(
         checkpoint
     )
 
-
     state_dict = clean_state_dict(
         state_dict
     )
 
-
-    # ========================================================
-    # MODEL CLASSES
-    # ========================================================
+    # --------------------------------------------------------
+    # Classes
+    # --------------------------------------------------------
 
     MODEL_CLASSES = get_model_classes(
         checkpoint
     )
 
-
     validate_classes(
         MODEL_CLASSES
     )
 
-
-    # ========================================================
-    # PRINT FC INFORMATION
-    # ========================================================
+    # --------------------------------------------------------
+    # FC information
+    # --------------------------------------------------------
 
     print_fc_layers(
         state_dict
     )
 
-
-    # ========================================================
-    # BUILD MODEL
-    # ========================================================
+    # --------------------------------------------------------
+    # Build model
+    # --------------------------------------------------------
 
     model = build_model(
         state_dict
     )
 
-
-    # ========================================================
-    # PRINT MODEL INFORMATION
-    # ========================================================
+    # --------------------------------------------------------
+    # Success information
+    # --------------------------------------------------------
 
     print()
 
@@ -1159,51 +884,39 @@ def load_model():
         "=" * 80
     )
 
-
     print(
-        "Model            : ResNet50"
+        f"Model            : ResNet50"
     )
 
-
     print(
-
         f"Architecture     : "
         f"{MODEL_ARCHITECTURE}"
-
     )
 
-
     print(
-
         f"Classes          : "
         f"{len(MODEL_CLASSES)}"
-
     )
 
-
     print(
-
         f"Class order      : "
         f"{MODEL_CLASSES}"
-
     )
 
+    print(
+        f"Input size       : "
+        f"{IMAGE_SIZE}x{IMAGE_SIZE}"
+    )
 
     print(
-
         f"Device           : "
         f"{DEVICE}"
-
     )
-
 
     print(
-
         f"Model path       : "
         f"{MODEL_PATH}"
-
     )
-
 
     print(
         "=" * 80
@@ -1219,7 +932,6 @@ def load_model():
 )
 def startup():
 
-    # Only CNN
     load_model()
 
 
@@ -1236,7 +948,7 @@ def root():
             "running",
 
         "application":
-            "Capsicum Plant Disease Detection API",
+            "Capsicum Plant Condition Detection API",
 
         "model":
             "ResNet50",
@@ -1250,8 +962,30 @@ def root():
         "classes":
             MODEL_CLASSES,
 
+        "input_size":
+            "224x224",
+
         "device":
             str(DEVICE),
+
+        "training_pipeline": {
+
+            "train":
+                "augmented_dataset/train",
+
+            "validation":
+                "dataset_split/valid",
+
+            "test":
+                "dataset_split/test",
+
+            "augmentation":
+                "train only",
+
+            "runtime_augmentation":
+                False
+
+        },
 
         "soil_model":
             False,
@@ -1285,6 +1019,9 @@ def health():
         "model":
             "ResNet50",
 
+        "architecture":
+            MODEL_ARCHITECTURE,
+
         "num_classes":
             len(MODEL_CLASSES),
 
@@ -1295,7 +1032,7 @@ def health():
 
 
 # ============================================================
-# CNN CLASS LIST
+# CLASS LIST
 # ============================================================
 
 @app.get(
@@ -1346,18 +1083,34 @@ def model_info():
         "fine_tuned_layers":
             "Layer4 + FC",
 
+        "dropout":
+            DROPOUT,
+
         "device":
             str(DEVICE),
 
         "model_path":
-            MODEL_PATH
+            MODEL_PATH,
+
+        "training_data":
+            {
+
+                "train":
+                    TRAIN_DIR,
+
+                "validation":
+                    VALID_DIR,
+
+                "test":
+                    TEST_DIR
+
+            }
 
     }
 
-
-    # ========================================================
-    # CHECKPOINT INFORMATION
-    # ========================================================
+    # --------------------------------------------------------
+    # Optional checkpoint metadata
+    # --------------------------------------------------------
 
     if isinstance(
         CHECKPOINT_INFO,
@@ -1376,9 +1129,7 @@ def model_info():
                         CHECKPOINT_INFO[
                             "epoch"
                         ]
-                    )
-
-                    + 1
+                    ) + 1
 
                 )
 
@@ -1396,7 +1147,6 @@ def model_info():
                     ]
 
                 )
-
 
         if "best_train_accuracy" in CHECKPOINT_INFO:
 
@@ -1427,7 +1177,6 @@ def model_info():
 
                 )
 
-
         if "best_valid_accuracy" in CHECKPOINT_INFO:
 
             try:
@@ -1457,7 +1206,6 @@ def model_info():
 
                 )
 
-
         if "architecture" in CHECKPOINT_INFO:
 
             result[
@@ -1469,7 +1217,6 @@ def model_info():
                 ]
 
             )
-
 
         if "num_classes" in CHECKPOINT_INFO:
 
@@ -1499,7 +1246,6 @@ def model_info():
                     ]
 
                 )
-
 
     return result
 
@@ -1533,7 +1279,6 @@ def get_class_info(
 
         }
 
-
     # --------------------------------------------------------
     # Case-insensitive match
     # --------------------------------------------------------
@@ -1541,7 +1286,6 @@ def get_class_info(
     normalized_name = (
         class_name.strip().lower()
     )
-
 
     for existing_name in CLASS_INFO:
 
@@ -1562,7 +1306,6 @@ def get_class_info(
                     ]
 
             }
-
 
     # --------------------------------------------------------
     # Not found
@@ -1592,6 +1335,19 @@ def get_class_info(
 
 # ============================================================
 # DATASET INFORMATION
+#
+# IMPORTANT:
+#
+# Train:
+#     augmented_dataset/train
+#
+# Validation:
+#     dataset_split/valid
+#
+# Test:
+#     dataset_split/test
+#
+# Therefore validation/test remain untouched.
 # ============================================================
 
 @app.get(
@@ -1610,7 +1366,6 @@ def dataset_info():
     test_count = count_images(
         TEST_DIR
     )
-
 
     return {
 
@@ -1646,7 +1401,13 @@ def dataset_info():
             VALID_DIR,
 
         "test_directory":
-            TEST_DIR
+            TEST_DIR,
+
+        "augmentation":
+            "Train only",
+
+        "validation_test_augmented":
+            False
 
     }
 
@@ -1672,9 +1433,7 @@ def dataset_class_wise():
         TEST_DIR
     )
 
-
     result = {}
-
 
     for class_name in MODEL_CLASSES:
 
@@ -1700,7 +1459,6 @@ def dataset_class_wise():
 
         }
 
-
     return {
 
         "num_classes":
@@ -1713,7 +1471,7 @@ def dataset_class_wise():
 
 
 # ============================================================
-# CNN PREDICTION FUNCTION
+# PREDICT IMAGE
 # ============================================================
 
 def predict_image(
@@ -1726,46 +1484,41 @@ def predict_image(
             "Model is not loaded."
         )
 
-
-    # ========================================================
+    # --------------------------------------------------------
     # RGB
-    # ========================================================
+    # --------------------------------------------------------
 
     image = image.convert(
         "RGB"
     )
 
-
-    # ========================================================
-    # TRANSFORM
-    # ========================================================
+    # --------------------------------------------------------
+    # Transform
+    # --------------------------------------------------------
 
     tensor = INFERENCE_TRANSFORM(
         image
     )
 
-
-    # ========================================================
-    # BATCH DIMENSION
-    # ========================================================
+    # --------------------------------------------------------
+    # Batch dimension
+    # --------------------------------------------------------
 
     tensor = tensor.unsqueeze(
         0
     )
 
-
-    # ========================================================
-    # DEVICE
-    # ========================================================
+    # --------------------------------------------------------
+    # Device
+    # --------------------------------------------------------
 
     tensor = tensor.to(
         DEVICE
     )
 
-
-    # ========================================================
-    # MODEL PREDICTION
-    # ========================================================
+    # --------------------------------------------------------
+    # Prediction
+    # --------------------------------------------------------
 
     with torch.inference_mode():
 
@@ -1773,10 +1526,9 @@ def predict_image(
             tensor
         )
 
-
-    # ========================================================
-    # SOFTMAX
-    # ========================================================
+    # --------------------------------------------------------
+    # Softmax
+    # --------------------------------------------------------
 
     probabilities = torch.softmax(
 
@@ -1786,10 +1538,9 @@ def predict_image(
 
     )
 
-
-    # ========================================================
-    # TOP K
-    # ========================================================
+    # --------------------------------------------------------
+    # Top K
+    # --------------------------------------------------------
 
     top_k = min(
 
@@ -1798,7 +1549,6 @@ def predict_image(
         len(MODEL_CLASSES)
 
     )
-
 
     top_probabilities, top_indices = torch.topk(
 
@@ -1810,13 +1560,11 @@ def predict_image(
 
     )
 
-
-    # ========================================================
-    # PREDICTION LIST
-    # ========================================================
+    # --------------------------------------------------------
+    # Prediction list
+    # --------------------------------------------------------
 
     predictions = []
-
 
     for rank in range(
         top_k
@@ -1832,7 +1580,6 @@ def predict_image(
 
         )
 
-
         confidence = (
 
             top_probabilities[
@@ -1843,10 +1590,9 @@ def predict_image(
 
             *
 
-            100
+            100.0
 
         )
-
 
         class_name = (
 
@@ -1855,7 +1601,6 @@ def predict_image(
             ]
 
         )
-
 
         predictions.append({
 
@@ -1882,26 +1627,19 @@ def predict_image(
 
         })
 
-
-    # ========================================================
-    # PRIMARY PREDICTION
-    # ========================================================
+    # --------------------------------------------------------
+    # Primary prediction
+    # --------------------------------------------------------
 
     primary = predictions[0]
 
+    confidence = primary[
+        "confidence_percent"
+    ]
 
-    confidence = (
-
-        primary[
-            "confidence_percent"
-        ]
-
-    )
-
-
-    # ========================================================
-    # CONFIDENCE LEVEL
-    # ========================================================
+    # --------------------------------------------------------
+    # Confidence level
+    # --------------------------------------------------------
 
     if confidence >= 90:
 
@@ -1919,13 +1657,11 @@ def predict_image(
 
         confidence_level = "VERY LOW"
 
-
-    # ========================================================
-    # WARNING
-    # ========================================================
+    # --------------------------------------------------------
+    # Warning
+    # --------------------------------------------------------
 
     warning = None
-
 
     if confidence < 50:
 
@@ -1934,23 +1670,28 @@ def predict_image(
             "Low model confidence. "
 
             "The image may differ from the "
+
             "training distribution or may not "
+
             "belong to one of the supported classes."
 
         )
 
-
-    # ========================================================
-    # FINAL RESULT
-    # ========================================================
+    # --------------------------------------------------------
+    # Final result
+    # --------------------------------------------------------
 
     return {
 
         "predicted_class":
-            primary["class"],
+            primary[
+                "class"
+            ],
 
         "class_index":
-            primary["class_index"],
+            primary[
+                "class_index"
+            ],
 
         "confidence_percent":
             primary[
@@ -1996,10 +1737,9 @@ async def read_uploaded_image(
 
     }
 
-
-    # ========================================================
-    # CHECK FILE TYPE
-    # ========================================================
+    # --------------------------------------------------------
+    # Content type
+    # --------------------------------------------------------
 
     if file.content_type not in allowed_types:
 
@@ -2019,15 +1759,13 @@ async def read_uploaded_image(
 
         )
 
-
     try:
 
         # ----------------------------------------------------
-        # READ FILE
+        # Read file
         # ----------------------------------------------------
 
         contents = await file.read()
-
 
         if not contents:
 
@@ -2039,9 +1777,8 @@ async def read_uploaded_image(
 
             )
 
-
         # ----------------------------------------------------
-        # OPEN IMAGE
+        # Open image
         # ----------------------------------------------------
 
         image = Image.open(
@@ -2052,9 +1789,8 @@ async def read_uploaded_image(
 
         )
 
-
+        # Force actual image decoding
         image.load()
-
 
         # ----------------------------------------------------
         # RGB
@@ -2064,9 +1800,7 @@ async def read_uploaded_image(
             "RGB"
         )
 
-
         return image
-
 
     except UnidentifiedImageError:
 
@@ -2075,16 +1809,15 @@ async def read_uploaded_image(
             status_code=400,
 
             detail=(
-                "Uploaded file is not a valid image."
+                "Uploaded file is not "
+                "a valid image."
             )
 
         )
 
-
     except HTTPException:
 
         raise
-
 
     except Exception as error:
 
@@ -2100,7 +1833,7 @@ async def read_uploaded_image(
 
 
 # ============================================================
-# CNN SINGLE PREDICTION
+# SINGLE PREDICTION
 # ============================================================
 
 @app.post(
@@ -2112,18 +1845,17 @@ async def predict(
 
 ):
 
-    # ========================================================
-    # READ IMAGE
-    # ========================================================
+    # --------------------------------------------------------
+    # Read image
+    # --------------------------------------------------------
 
     image = await read_uploaded_image(
         file
     )
 
-
-    # ========================================================
-    # PREDICT
-    # ========================================================
+    # --------------------------------------------------------
+    # Prediction
+    # --------------------------------------------------------
 
     try:
 
@@ -2143,10 +1875,9 @@ async def predict(
 
         )
 
-
-    # ========================================================
-    # RESPONSE
-    # ========================================================
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
 
     return {
 
@@ -2181,7 +1912,7 @@ async def predict(
 
 
 # ============================================================
-# CNN BATCH PREDICTION
+# BATCH PREDICTION
 # ============================================================
 
 @app.post(
@@ -2201,38 +1932,36 @@ async def predict_batch(
 
             status_code=400,
 
-            detail="No images were uploaded."
+            detail=(
+                "No images were uploaded."
+            )
 
         )
 
-
     results = []
-
 
     for file in files:
 
         try:
 
             # ------------------------------------------------
-            # READ IMAGE
+            # Read image
             # ------------------------------------------------
 
             image = await read_uploaded_image(
                 file
             )
 
-
             # ------------------------------------------------
-            # PREDICTION
+            # Predict
             # ------------------------------------------------
 
             prediction = predict_image(
                 image
             )
 
-
             # ------------------------------------------------
-            # RESULT
+            # Result
             # ------------------------------------------------
 
             results.append({
@@ -2254,7 +1983,6 @@ async def predict_batch(
 
             })
 
-
         except Exception as error:
 
             results.append({
@@ -2270,10 +1998,31 @@ async def predict_batch(
 
             })
 
+    # --------------------------------------------------------
+    # Statistics
+    # --------------------------------------------------------
 
-    # ========================================================
-    # FINAL BATCH RESPONSE
-    # ========================================================
+    successful = sum(
+
+        1
+
+        for result in results
+
+        if result["success"]
+
+    )
+
+    failed = (
+
+        len(results)
+        -
+        successful
+
+    )
+
+    # --------------------------------------------------------
+    # Response
+    # --------------------------------------------------------
 
     return {
 
@@ -2284,28 +2033,10 @@ async def predict_batch(
             len(files),
 
         "successful_predictions":
-
-            sum(
-
-                1
-
-                for result in results
-
-                if result["success"]
-
-            ),
+            successful,
 
         "failed_predictions":
-
-            sum(
-
-                1
-
-                for result in results
-
-                if not result["success"]
-
-            ),
+            failed,
 
         "results":
             results
@@ -2321,7 +2052,6 @@ if __name__ == "__main__":
 
     import uvicorn
 
-
     uvicorn.run(
 
         "app:app",
@@ -2333,3 +2063,4 @@ if __name__ == "__main__":
         reload=False
 
     )
+
